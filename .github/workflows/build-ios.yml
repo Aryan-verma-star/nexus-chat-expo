@@ -1,34 +1,69 @@
-# ios/Podfile
+name: Build iOS App
 
-require_relative '../node_modules/react-native/scripts/react_native_pods'
-require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-platform :ios, '15.1'  # or whatever your minimum is
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-target 'NexusChatHub' do
-  config = use_native_modules!
-  use_react_native!(:path => config[:reactNativePath])
+jobs:
+  build-ios:
+    runs-on: macos-latest
 
-  # ... your existing pods ...
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  post_install do |installer|
-    react_native_post_install(installer)
+      # ── PIN XCODE TO A COMPATIBLE VERSION ──
+      - name: Select Xcode version
+        run: |
+          # List available Xcode versions
+          ls /Applications/ | grep Xcode
+          # Use Xcode 16.2 (compatible with current Expo)
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+          xcodebuild -version
 
-    # ── THIS IS THE FIX ──
-    installer.pods_project.targets.each do |target|
-      target.build_configurations.each do |config|
-        # Disable strict Swift concurrency checks for ALL pods
-        config.build_settings['SWIFT_STRICT_CONCURRENCY'] = 'minimal'
-        config.build_settings['SWIFT_VERSION'] = '5.9'
-        # Suppress concurrency warnings treated as errors
-        config.build_settings['OTHER_SWIFT_FLAGS'] ||= ['$(inherited)']
-        unless config.build_settings['OTHER_SWIFT_FLAGS'].include?('-Xfrontend')
-          config.build_settings['OTHER_SWIFT_FLAGS'] << '-Xfrontend'
-          config.build_settings['OTHER_SWIFT_FLAGS'] << '-disable-upcoming-feature'
-          config.build_settings['OTHER_SWIFT_FLAGS'] << '-Xfrontend'
-          config.build_settings['OTHER_SWIFT_FLAGS'] << 'StrictConcurrency'
-        end
-      end
-    end
-  end
-end
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Clean old builds
+        run: |
+          rm -rf ios/Pods
+          rm -rf ios/Podfile.lock
+          rm -rf ios/build
+          rm -rf ~/Library/Developer/Xcode/DerivedData
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Install CocoaPods
+        run: |
+          sudo gem install cocoapods
+          cd ios
+          pod install --repo-update
+          cd ..
+
+      - name: Build iOS
+        run: |
+          cd ios
+          xcodebuild -workspace NexusChatHub.xcworkspace \
+            -scheme NexusChatHub \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_STRICT_CONCURRENCY=minimal \
+            build
+
+      - name: Upload Build
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ios-build
+          path: ios/build/Build/Products/Release-iphonesimulator/NexusChatHub.app
